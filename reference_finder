@@ -1,0 +1,82 @@
+#!/bin/bash
+
+### author: blair
+###
+### Take a search term and return plain text citation
+###
+### usage: reference_finder (search term) [AND [search terms]]
+### depends: pandoc, pandoc-citeproc, rofi, jq
+###
+### Can also do
+### > BIBFILE=$WEIRD_PATH reference_finder analysis rudin
+###
+### Note, by default, only searches for
+###
+###     - author
+###     - id
+###     - title
+###     - year
+###
+### this could be extended by modifying the jq expression.
+
+bibfile=${BIBFILE:-$HOME/desk/writing/bib.bib} 
+
+# Error handling
+if [ ! -f $bibfile ]; then
+	echo "Bibfile: $bibfile does not exist! Exiting!" > /dev/stderr
+	exit 1
+fi
+
+if test -z "$1"; then
+	echo "Please provide a search terms; they will be joined by AND" && exit 0
+fi
+
+
+# Create a search term which selects for all of the above queries.
+search=()
+search+="grep -i \"$1\""
+shift
+while test -n "$1"; do
+	search+=" | grep -i \"$1\""
+	shift
+done
+
+
+# Need to temporarily create a file for results
+temp_file=$(mktemp)
+trap "rm -f $temp_file" 0 2 3 15
+
+pandoc-citeproc -j "$bibfile" | jq '.[] | [.id, .title, try (.author[][]) catch try (.author[]) catch null, .year] | @csv' | sed 's/[\\"]//g' | eval ${search[@]} > $temp_file
+
+
+# Get the bibtex id
+entry=$(case $(cat $temp_file | wc -l) in
+			0)
+				echo "Nothing found!" > /dev/stderr
+				exit 1
+				;;
+			1)
+	  			awk -F ',' '{print $1}' $temp_file
+				;;
+			*)
+	  			cat $temp_file | rofi -dmenu -p "entry" | awk -F ',' '{print $1}'
+				;;
+		esac)
+
+# If nothing selected, exit gracefully.
+test -z "$entry" && exit 0
+
+{
+	cat << EOF
+
+\documentclass{article} 
+\usepackage{biblatex} 
+\bibliography{bib} 
+\begin{document}
+\cite{$entry}
+\printbibliography
+\end{document}
+
+EOF
+} | pandoc -f latex -t plain --bibliography "$bibfile"
+
